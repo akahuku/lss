@@ -1,0 +1,11 @@
+{
+	"SGR": {
+		"long_thumbnail": {
+			"primary": "",
+			"secondary": "38;5;244"
+		},
+		"long": {
+			"header": "33;4;1"
+		}
+	}
+}

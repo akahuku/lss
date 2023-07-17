@@ -1,0 +1,7 @@
+*.sw?
+Session.vim
+node_modules
+images
+ls source code.c
+misc
+build

@@ -1,0 +1,10 @@
+[Unit]
+Description=thumbnail cache pruner for lss
+
+[Service]
+Type=oneshot
+; note: install-script replaces "LSS_ROOT" to actual path
+ExecStart=$LSS_ROOT/bin/prune
+
+[Install]
+WantedBy=multi-user.target

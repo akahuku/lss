@@ -1,0 +1,9 @@
+[Unit]
+Description=thumbnail cache prune timer for lss
+
+[Timer]
+OnStartupSec=10min
+OnUnitActiveSec=1day
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+#!/usr/bin/bash
+
+DEADLINE_DAYS="+30"
+
+SELFPATH="$(dirname "$(readlink -f "$0")")"
+LSS_ROOT="$(dirname "$SELFPATH")"
+if [ -d "$XDG_CACHE_HOME" ]; then
+	CACHEPATH="$XDG_CACHE_HOME"
+else
+	CACHEPATH="$HOME/.cache"
+fi
+CACHEPATH="$CACHEPATH/thumbnails/sixel"
+
+if [ -d "$CACHEPATH" ]; then
+	find "$CACHEPATH" -type f "(" -name '*.six' -or -name '*.json' ")" -atime "$DEADLINE_DAYS" -delete
+	find "$CACHEPATH" -type d -empty -delete
+	echo "Thumbnail caches on \"$CACHEPATH\" has been pruned."
+fi

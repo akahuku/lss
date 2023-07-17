@@ -1,0 +1,19 @@
+#!/usr/bin/bash
+
+SELFPATH="$(dirname "$(readlink -f "$0")")"
+LSS_ROOT="$(dirname "$SELFPATH")"
+UNITPATH="$HOME/.config/systemd/user"
+SYSTEMCTL="systemctl"
+
+[[ $(type -P "$SYSTEMCTL") ]] || exit 1
+
+mkdir -p "$UNITPATH"
+
+SLASH="/"
+while read -r unitfile; do
+	unit="$(basename "$unitfile")"
+	echo "installing $unit..."
+	sed -e "s/\$LSS_ROOT/${LSS_ROOT//$SLASH/\\$SLASH}/g" "$unitfile" > "$UNITPATH/$unit"
+done < <(find "$LSS_ROOT/unit" -mindepth 1 -maxdepth 1 -type f '(' -name '*.service' -o -name '*.timer' ')')
+
+$SYSTEMCTL enable --user --now lss-prune.timer

@@ -1,0 +1,12 @@
+#!/usr/bin/bash
+
+SELFPATH="$(dirname "$(readlink -f "$0")")"
+Q="'"; for s in "$@"; do args+=("'${s//$Q/\\$Q}'"); done
+ARG1=$(echo -n "${args[*]}" | hexdump -v -e '/1 "%02x"')
+if [ -t 1 ]; then
+	stty -echo
+	echo -en '\e[6n…\e[6n\e[G\e[K\e[c\e[14t\e]11;?\e\\'
+	read -d "\\" -t 0.1 ARG2 <&1
+	stty echo
+fi
+exec -a $(basename "$0") node "$SELFPATH/../src/lss.js" "$ARG1" "$ARG2"

@@ -1,0 +1,17 @@
+#!/usr/bin/bash
+
+SELFPATH="$(dirname "$(readlink -f "$0")")"
+LSS_ROOT="$(dirname "$SELFPATH")"
+UNITPATH="$HOME/.config/systemd/user"
+SYSTEMCTL="systemctl"
+
+[[ $(type -P "$SYSTEMCTL") ]] || exit 1
+
+SLASH="/"
+while read -r unitfile; do
+	unit="$(basename "$unitfile")"
+	echo "uninstalling $unit..."
+	$SYSTEMCTL stop --user "$unit"
+	$SYSTEMCTL disable --user "$unit"
+	rm "$unitfile"
+done < <(find "$UNITPATH" -mindepth 1 -maxdepth 1 -type f -name 'lss-*')
