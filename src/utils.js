@@ -486,6 +486,17 @@ export function fileTouch (filepath, time) {
 	}
 }
 
+export function fileWhich (name) {
+	try {
+		return child_process
+			.execFileSync('which', [name], {stdio: 'pipe', encoding: 'utf8'})
+			.split('\n')[0];
+	}
+	catch {
+		return null;
+	}
+}
+
 export function delay (wait) {
 	return new Promise(resolve => {setTimeout(resolve, wait)});
 }

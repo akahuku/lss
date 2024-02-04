@@ -1,6 +1,6 @@
 {
   "name": "lss",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "unofficial port of 'ls' in GNU coreutils",
   "bin": "bin/lss",
   "scripts": {

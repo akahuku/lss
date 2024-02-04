@@ -11,8 +11,8 @@ import {pathToFileURL} from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 
-import {__dirname, runtime} from './base.js';
-import {fileEscape, fileExists, fileTouch} from './utils.js';
+import {__dirname, runtime, self} from './base.js';
+import {fileEscape, fileExists, fileTouch, fileWhich} from './utils.js';
 import {log} from './logger.js';
 
 
@@ -22,11 +22,6 @@ const CACHE_ROOT_NAME = 'sixel';
 const DESKTOP_CACHE_HOME = 'XDG_CACHE_HOME';
 const DESKTOP_RUNTIME_DIR = 'XDG_RUNTIME_DIR';
 
-const GSETTINGS_EXECUTABLE = 'gsettings';
-const GIO_EXECUTABLE = 'gio';
-const GDK_THUMBNAILER_EXECUTABLE = 'gdk-pixbuf-thumbnailer';
-const IMAGEMAGICK_EXECUTABLE = 'convert';
-
 const SYSTEM_THUMBNAILER_PATH = '/usr/share/thumbnailers';
 const USER_THUMBNAILER_PATH = '.local/share/thumbnailers';
 const SYSTEM_ICON_PATH = '/usr/share/icons';
@@ -34,6 +29,22 @@ const SYSTEM_ICON_PATH = '/usr/share/icons';
 const CUTOFF_THRESHOLD = 2.0;
 
 
+
+let childNames;
+
+function _initChildNames () {
+	childNames = {
+		'gsettings': 'gsettings',
+		'gio': 'gio',
+		'gdk-pixbuf-thumbnailer': 'gdk-pixbuf-thumbnailer',
+		'convert': 'convert',
+		'getfattr': 'getfattr',
+		'setfattr': 'setfattr',
+		'file': 'file'
+	};
+}
+
+_initChildNames();
 
 /*
  * temporary directory handling functions
@@ -100,10 +111,10 @@ function errorMessage (...args) {
 		if (message == '') {
 			message = 'error';
 		}
-		message += `: "${runtime.isVerbose ? error.stack : error.message}"`;
+		message += ` (${runtime.isVerbose ? error.stack : error.message})`;
 	}
 
-	return message;
+	return `${self}: ${message}`;
 }
 
 function printError (...args) {
@@ -282,7 +293,7 @@ getExtendAttribute.viaChildProcess = path => {
 			encoding: 'utf8'
 		};
 		lines = child_process
-				.execFileSync('getfattr', args, opts)
+				.execFileSync(childNames.getfattr, args, opts)
 				.replace(/^\s+|\s+$/g, '');
 	}
 	catch {
@@ -361,7 +372,7 @@ setExtendAttribute.viaChildProcess = (path, attribs) => {
 	};
 
 	try {
-		child_process.execFileSync('setfattr', args, opts);
+		child_process.execFileSync(childNames.setfattr, args, opts);
 		return true;
 	}
 	catch {
@@ -388,7 +399,7 @@ getMimeType.viaGio = path => {
 		timeout: 3000,
 		encoding: 'utf8'
 	};
-	const result = child_process.execFileSync(GIO_EXECUTABLE, args, opts);
+	const result = child_process.execFileSync(childNames.gio, args, opts);
 
 	if (/standard::icon:\s*([^\n]+)/.test(result)) {
 		return RegExp.$1.split(/,\s*/);
@@ -427,7 +438,7 @@ getMimeType.viaChildProcess = path => {
 		encoding: 'utf8'
 	};
 	return child_process
-		.execFileSync('file', args, opts)
+		.execFileSync(childNames.file, args, opts)
 		.replace(/^\s+|\s+$/g, '');
 };
 
@@ -603,6 +614,17 @@ export function getThumbnailerInfo () {
 		}
 	});
 
+	if (mimeMap.size == 0 || !fileWhich(childNames['gdk-pixbuf-thumbnailer'])) {
+		mimeMap.clear;
+		`gif, jpeg, png, x-tga, tiff, webp,
+		bmp, x-MS-bmp, x-bmp, x-win-bitmap,
+		ico, icon, vnd.microsoft.icon, x-ico, x-icon,
+		x-portable-bitmap, x-portable-graymap, x-portable-anymap, x-portable-pixmap,
+		x-xpixmap`.split(/\s*,\s*/).forEach(type => {
+			mimeMap.set(`image-${type}`, null);
+		});
+	}
+
 	return {
 		get: (...mimeTypes) => {
 			for (const mimeType of mimeTypes) {
@@ -698,7 +720,7 @@ export const mimeTypeToIcon = (() => {
 	function getCurrentTheme () {
 		try {
 			const theme = child_process.execFileSync(
-				GSETTINGS_EXECUTABLE,
+				childNames.gsettings,
 				[
 					'get', 'org.gnome.desktop.interface', 'icon-theme'
 				],
@@ -886,9 +908,13 @@ export const thumbnailUtils = (() => {
 	 * typical content:
 	 *   #Map {
 	 *     'image-png': '/usr/bin/gdk-pixbuf-thumbnailer -s %s %u %o',
-	 *     'video-mp4': 'ffmpegthumbnailer -i %i -o %o -s %s -f'
+	 *     'video-mp4': 'ffmpegthumbnailer -i %i -o %o -s %s -f',
 	 *       :
+	 *     'image-jpeg': null
 	 *   }
+	 *
+	 *   node: if the value is null, imagemagick creates the thumbnail directly
+	 *         without using thumbnailer. see createSixelViaThumbnailer()
 	 *
 	 * place holders:
 	 *   %s - thumbnail size
@@ -1155,7 +1181,7 @@ export const thumbnailUtils = (() => {
 		let sixel;
 
 		try {
-			sixel = child_process.execFileSync(IMAGEMAGICK_EXECUTABLE, [
+			sixel = child_process.execFileSync(childNames.convert, [
 				thumbnailPngPath, '-thumbnail', `${thumbSize}x${clippedHeight}>`,
 
 				'(', '+clone', '-draw', `image src 0,0 0,0 "${transparent}"`, ')',
@@ -1184,8 +1210,11 @@ export const thumbnailUtils = (() => {
 		let sixel;
 
 		try {
-			sixel = execFilesSync(
-				[
+			const commands = [];
+			let convertInput;
+
+			if (commandTemplate) {
+				commands.push([
 					commandTemplate
 						.replace(/%s/g, thumbSize * 2)
 						.replace(/%u/g, `"${srcUri.replace(/"/g, '\\"')}"`)
@@ -1193,20 +1222,26 @@ export const thumbnailUtils = (() => {
 						.replace(/%o/g, '"$TEMPFILE$"')
 						.replace(/%%/g, '%'),
 					{stdio: 'pipe'}
-				],
+				]);
+				convertInput = '$TEMPFILE$';
+			}
+			else {
+				convertInput = srcPath;
+			}
+
+			commands.push([
+				childNames.convert,
 				[
-					IMAGEMAGICK_EXECUTABLE,
-					[
-						'$TEMPFILE$', '-thumbnail', `${thumbSize}x${clippedHeight}>`,
-						'(', '+clone', '-draw', `image src 0,0 0,0 "${transparent}"`, ')',
-						'+swap', '-composite',
+					convertInput, '-thumbnail', `${thumbSize}x${clippedHeight}>`,
+					'(', '+clone', '-draw', `image src 0,0 0,0 "${transparent}"`, ')',
+					'+swap', '-composite',
 
-						...getSixelOutputArgs()
-					],
-					{stdio: 'pipe', encoding: 'utf8'}
-				]
-			);
+					...getSixelOutputArgs()
+				],
+				{stdio: 'pipe', encoding: 'utf8'}
+			]);
 
+			sixel = execFilesSync(...commands);
 			sixel = fixupSixel(sixel);
 		}
 		catch (err) {
@@ -1228,7 +1263,7 @@ export const thumbnailUtils = (() => {
 
 		try {
 			if (/\.png$/i.test(iconPngPath)) {
-				sixel = child_process.execFileSync(IMAGEMAGICK_EXECUTABLE, [
+				sixel = child_process.execFileSync(childNames.convert, [
 					iconPngPath, '-thumbnail', `${thumbSize}x${clippedHeight}>`,
 
 					...getSixelOutputArgs()
@@ -1237,12 +1272,12 @@ export const thumbnailUtils = (() => {
 			else if (/\.svg$/i.test(iconPngPath)) {
 				sixel = execFilesSync(
 					[
-						GDK_THUMBNAILER_EXECUTABLE,
+						childNames['gdk-pixbuf-thumbnailer'],
 						['-s', contentSize, iconPngPath, '$TEMPFILE$'],
 						{stdio: 'pipe'}
 					],
 					[
-						IMAGEMAGICK_EXECUTABLE,
+						childNames.convert,
 						['$TEMPFILE$', ...getSixelOutputArgs()],
 						{stdio: 'pipe', encoding: 'utf8'}
 					]
@@ -1270,7 +1305,7 @@ export const thumbnailUtils = (() => {
 
 		try {
 			const hue = getUniqueHue(ext);
-			sixel = child_process.execFileSync(IMAGEMAGICK_EXECUTABLE, [
+			sixel = child_process.execFileSync(childNames.convert, [
 				iconPngPath , '-thumbnail', `${contentSize}x${contentSize}>`,
 				'-fill', `hsl(${hue},100%,50%)`, '-colorize', '15',
 
@@ -1412,12 +1447,12 @@ export const thumbnailUtils = (() => {
 
 		try {
 			const child = child_process.spawnSync(
-				IMAGEMAGICK_EXECUTABLE, ['-version'], {
+				childNames.convert, ['-version'], {
 					stdio: 'pipe',
 					encoding: 'utf8'
 				});
 			if (child.status !== 0) {
-				throw new Error(`imagemagick returned an invalid exit code`);
+				throw new Error(`invalid exit code`);
 			}
 		}
 		catch (err) {
@@ -1488,6 +1523,10 @@ export const thumbnailUtils = (() => {
 
 	function clearMemoryCache () {
 		mimeTypeIconCache.clear();
+	}
+
+	function clearThumbnailers () {
+		thumbnailerInfo = null;
 	}
 
 	function invalidateCache () {
@@ -1766,10 +1805,10 @@ export const thumbnailUtils = (() => {
 
 		let maxNameLength = 0;
 		const names = [
-			GSETTINGS_EXECUTABLE,
-			GIO_EXECUTABLE,
-			GDK_THUMBNAILER_EXECUTABLE,
-			IMAGEMAGICK_EXECUTABLE
+			childNames.gsettings,
+			childNames.gio,
+			childNames['gdk-pixbuf-thumbnailer'],
+			childNames.convert
 		];
 		const opts = {
 			stdio: ['pipe', 'pipe', 'ignore'],
@@ -1777,21 +1816,12 @@ export const thumbnailUtils = (() => {
 			timeout: 3000
 		};
 		const lines = names.map(name => {
-			let result;
+			const location = fileWhich(name);
 			maxNameLength = Math.max(maxNameLength, name.length);
-
-			try {
-				const location = child_process
-					.execFileSync('which', [name], opts)
-					.split('\n')[0];
-
-				result = `✅ ${location}`;
-			}
-			catch (err) {
-				result = `❌`;
-			}
-
-			return [name, result];
+			return [
+				name,
+				location ? `✅ ${location}` : `❌`
+			];
 		});
 
 		lines.forEach(line => {
@@ -1800,9 +1830,14 @@ export const thumbnailUtils = (() => {
 		});
 	}
 
+	function initChildNames () {
+		_initChildNames();
+	}
+
 	return {
-		init, get, clearSixelCache, clearPngCache, clearMemoryCache, invalidateCache,
-		diagnose,
+		init, get,
+		clearSixelCache, clearPngCache, clearMemoryCache, clearThumbnailers,
+		invalidateCache, diagnose, initChildNames,
 
 		get cacheDir () {
 			init();
@@ -1874,6 +1909,10 @@ export const thumbnailUtils = (() => {
 		},
 		set useBackgroundCutoff (value) {
 			useBackgroundCutoff = !!value;
+		},
+
+		get childNames () {
+			return childNames;
 		}
 	};
 })();

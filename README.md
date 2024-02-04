@@ -1,6 +1,6 @@
 # lss
 
-lss は GNU coreutils ls とほぼ同じ機能に加えて以下の機能を付加した
+lss は [GNU coreutils ls](https://www.gnu.org/software/coreutils/manual/html_node/ls-invocation.html) とほぼ同じ機能に加えて以下の機能を付加した
 [Node.js](http://nodejs.org) のアプリケーションです。
 
   * [sixel](https://en.wikipedia.org/wiki/Sixel) 形式でアイコンおよびサムネイルを表示します
