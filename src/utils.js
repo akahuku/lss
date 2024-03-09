@@ -8,7 +8,7 @@ import child_process from 'node:child_process';
 import fs from 'node:fs';
 import Unistring from '@akahuku/unistring';
 
-export async function stdioFilter (data, executable, args, options) {
+export function stdioFilter (data, executable, args, options) {
 	return new Promise((resolve, reject) => {
 		const chunks = [];
 		let child;
@@ -665,3 +665,5 @@ export const stdout = (() => {
 
 	return stdout;
 })();
+
+// vim:set ts=4 sw=4 fenc=UTF-8 ff=unix ft=javascript fdm=marker fmr=<<<,>>> :

@@ -197,7 +197,7 @@ const TRANSLATORS = {
 	},
 	// hour using 12-hour clock, 2digits
 	I: (d,l,t,f,w,g) => {
-		return align(g.hour % 12, f, w || 2);
+		return align(g.hour % 12 ?? 12, f, w || 2);
 	},
 	// day of year, 3digits
 	j: (d,l,t,f,w,g) => {
@@ -210,7 +210,7 @@ const TRANSLATORS = {
 	},
 	// hour using 12-hour clock, 2digits, with blank character
 	l: (d,l,t,f,w,g) => {
-		return align(g.hour % 12, f, w || 2)
+		return align(g.hour % 12 ?? 12, f, w || 2)
 			.replace(/^0+/, $0 => ' '.repeat($0.length));
 	},
 	// month, 2digits
@@ -396,12 +396,12 @@ function applyAlias(name, d, l, t) {
 }
 
 export function getDefaultTimezone (method) {
-	if (defaultTimezone !== undefined) {
-		return defaultTimezone;
-	}
-
 	// via TZ environment variable, only Olson format
 	if (!method || method === 'env') {
+		if (defaultTimezone !== undefined) {
+			return defaultTimezone;
+		}
+
 		if (/([A-Za-z0-9\-+_]+\/[A-Za-z0-9\-+_]+)/.test(process.env['TZ'])) {
 			return defaultTimezone = RegExp.$1;
 		}
@@ -409,6 +409,10 @@ export function getDefaultTimezone (method) {
 
 	// via Intl
 	if (!method || method === 'Intl') {
+		if (defaultTimezone !== undefined) {
+			return defaultTimezone;
+		}
+
 		let result;
 		try {
 			result = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -421,6 +425,10 @@ export function getDefaultTimezone (method) {
 
 	// via systemd
 	if (!method || method === 'timedatectl') {
+		if (defaultTimezone !== undefined) {
+			return defaultTimezone;
+		}
+
 		try {
 			return defaultTimezone = execSync(`timedatectl show -p Timezone --value`);
 		}
@@ -429,6 +437,10 @@ export function getDefaultTimezone (method) {
 
 	// via file under /etc
 	if (!method || method === 'etc') {
+		if (defaultTimezone !== undefined) {
+			return defaultTimezone;
+		}
+
 		try {
 			return defaultTimezone = execSync(`cat /etc/timezone`);
 		}
@@ -439,14 +451,14 @@ export function getDefaultTimezone (method) {
 }
 
 export function getDefaultLocale (method) {
-	if (defaultLocale !== undefined) {
-		return defaultLocale;
-	}
-
 	let locale;
 
 	// environment variables
 	if (!method || method === 'env') {
+		if (defaultLocale !== undefined) {
+			return defaultLocale;
+		}
+
 		locale = ['LC_ALL', 'LC_TIME', 'LANG'].reduce((result, current) => {
 			if (current in process.env && result == '') {
 				return process.env[current];
@@ -477,6 +489,10 @@ export function getDefaultLocale (method) {
 	}
 
 	if (!method || method === 'Intl') {
+		if (defaultLocale !== undefined) {
+			return defaultLocale;
+		}
+
 		return defaultLocale = new Intl.DateTimeFormat().resolvedOptions().locale;
 	}
 
@@ -530,7 +546,7 @@ export function getLangInfo (locale, key) {
 		});
 	}
 
-	return langInfoPool[locale][key].get(itemKey);
+	return langInfoPool[locale].get(key);
 }
 
 function ensureFormatter (key, locale, timezone) {
@@ -557,7 +573,7 @@ function getGenericParts (datetime, timezone) {
 	const locale = 'en-US';
 	const formatter = ensureFormatter(key, locale, timezone);
 	const parts = formatter.formatToParts(datetime);
-	return parts.reduce((result, item) => {
+	const result = parts.reduce((result, item) => {
 		if (item.type != 'literal') {
 			result[item.type] = /^\d+$/.test(item.value) ?
 				item.value - 0 :
@@ -565,6 +581,12 @@ function getGenericParts (datetime, timezone) {
 		}
 		return result;
 	}, {});
+
+	if ('hour' in result && typeof result.hour === 'number') {
+		result.hour %= 24;
+	}
+
+	return result;
 }
 
 export function format (datetime, locale, timezone, key) {
@@ -735,3 +757,5 @@ Object.defineProperties(strftime, {
 		}
 	}
 });
+
+// vim:set ts=4 sw=4 fenc=UTF-8 ff=unix ft=javascript fdm=marker fmr=<<<,>>> :

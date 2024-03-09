@@ -317,6 +317,24 @@ export const pref = {
 	invalidateThumbnailCache: false,
 
 	/*
+	 * lss extension: integrate output of 'git status'
+	 */
+
+	git: false,
+
+	/*
+	 * lss extension: methods to position long filenames for folding
+	 *
+	 *   - avg
+	 *   - median
+	 *   - avg+median
+	 *   - max_avg_median
+	 *   - sd
+	 */
+
+	foldMethod: 'avg+median',
+
+	/*
 	 * Color Name  FG  BG            Style  Set  Reset
 	 * ----------  --  --        ---------  ---  -----
 	 *      Black  30  40             Bold    1     22
@@ -573,6 +591,9 @@ export const runtime = {
 		author: 0,
 		majorDeviceNumber: 0,
 		minorDeviceNumber: 0,
-		fileSize: 0
+		fileSize: 0,
+		git: 0
 	}
 };
+
+// vim:set ts=4 sw=4 fenc=UTF-8 ff=unix ft=javascript fdm=marker fmr=<<<,>>> :

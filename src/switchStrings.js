@@ -92,6 +92,8 @@ more info below`],
 		`same as -F, except do not append '*'`],
 	[null, 'full-time', null,
 		'like -l --time-style=full-iso'],
+	[null, 'git', null,
+		'integrate the output of git-status'],
 	[null, 'group-directories-first', null,
 		'group directories before files; can be augmented with a --sort option, but any use of --sort=none (-U) disables grouping'],
 	[null, 'header', null,
@@ -256,3 +258,5 @@ Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
 
   The lss is an unofficial port of <a href="https://www.gnu.org/software/coreutils/ls">ls</a> included in <a href="https://www.gnu.org/software/coreutils/">GNU coreutils</a>.`;
 
+
+// vim:set ts=4 sw=4 fenc=UTF-8 ff=unix ft=javascript fdm=marker fmr=<<<,>>> :

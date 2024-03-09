@@ -33,6 +33,7 @@ function knownTermType () {
 		|| term === 'terminator'
 		|| /^tmux/.test(term)
 		|| term === 'vt100'
+		|| term === 'wezterm'
 		|| /^xterm/.test(term);
 }
 
@@ -291,3 +292,5 @@ loop:
 		pref.colorSymlinkAsReferent = true;
 	}
 }
+
+// vim:set ts=4 sw=4 fenc=UTF-8 ff=unix ft=javascript fdm=marker fmr=<<<,>>> :

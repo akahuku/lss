@@ -80,6 +80,7 @@ let capUtils;
 let idUtils;
 let thumbnailUtils;
 let versionUtils;
+let gitUtils;
 
 // <<< parseArgs
 function parseArgs () {
@@ -385,6 +386,8 @@ ${validList}
 			'D:dired',
 			'  file-type',
 			'  full-time',
+			'  git',
+			'  no-git',
 			'  group-directories-first',
 			'  header',
 			'h:human-readable',
@@ -668,6 +671,14 @@ ${validList}
 		case 'full-time':
 			formatOption = 'long';
 			timeStyleOption = 'full-iso';
+			break;
+
+		case 'git':
+			pref.git = true;
+			break;
+
+		case 'no-git':
+			pref.git = false;
 			break;
 
 		case 'group-directories-first':
@@ -1036,9 +1047,13 @@ ${validList}
 	 */
 
 	if (pref.format == 'long') {
-		if (timeStyleOption === null
-		 && !('TIME_STYLE' in process.env)) {
-			timeStyleOption = 'locale';
+		if (timeStyleOption === null) {
+			if ('TIME_STYLE' in process.env) {
+				timeStyleOption = process.env['TIME_STYLE'];
+			}
+			else {
+				timeStyleOption = 'locale';
+			}
 		}
 
 		if (!timeStyleOption.startsWith('posix-')
@@ -1136,6 +1151,10 @@ class FileInfo {
 		//   false:        - no quoting needed
 		//   true:         - needs quoting
 		this.quoted = null;
+		// Git status ([string, number]|null)
+		//   index #0: git status char (M, T, A, D, R, C, !, ?, DD, AU, ...)
+		//   index #1: section index, see SECTION_LABELS in src/git.js
+		this.git = null;
 
 		this.cache = {
 			// isDirectory: 1 or 0, used for sort key
@@ -1154,35 +1173,105 @@ class FileInfo {
 		};
 	}
 
+	clone () {
+		const f = new FileInfo;
+
+		f.stat = this.stat;
+		f.statOk = this.statOk;
+		f.fileType = this.fileType;
+		f.name = Buffer.from(this.name);
+		f.linkName = this.linkName ? Buffer.from(this.linkName) : this.linkName;
+		f.linkMode = this.linkMode;
+		f.linkOk = this.linkOk;
+		f.absoluteName = this.absoluteName;
+		f.scontext = this.scontext;
+		f.aclType = this.aclType;
+		f.hasCapability = this.hasCapability;
+		f.quoted = this.quoted;
+		f.git = this.git ? Array.from(this.git) : this.git;
+		f.cache = {};
+
+		return f;
+	}
+
 	getFrills () {
 		const widthInvalidated = pref.format == 'Z,';
-		let result = '';
+		let content = '';
+		let usedColorThisTime = false;
+		let lastColor = null;
 
 		if (pref.printInode) {
 			const w = widthInvalidated ? 0 : runtime.maxColumns.inode;
-			result += printf('%*s ', w, formatInode(this));
+			content += printf('%*s ', w, this.formatInode());
 		}
 		if (pref.printBlockSize) {
 			const w = widthInvalidated ? 0 : runtime.maxColumns.blockSize;
-			let s;
-			if (this.statOk) {
-				s = humanUtils.humanReadable(
-					statUtils.ST_NBLOCKS(this.stat),
-					pref.humanOutputOpts,
-					this.stat.blksize,
-					pref.outputBlockSize);
-			}
-			else {
-				s = '?';
-			}
-			result += printf('%*s ', w, s);
+			content += printf('%*s ', w, this.formatBlockSize());
 		}
 		if (pref.printScontext) {
 			const w = widthInvalidated ? 0 : runtime.maxColumns.scontext;
-			result += printf('%*s ', w, this.scontext);
+			content += printf('%*s ', w, this.scontext);
+		}
+		if (gitUtils?.isValidPath) {
+			const s = this.formatGit();
+			const w = widthInvalidated || s[1] == '' ? 0 : runtime.maxColumns.git;
+			if (s.char != '') {
+				if (pref.printThumbnail) {
+					content += printf('%s%s%s%s', s.left, s.desc, s.right, s.pad);
+				}
+				else {
+					content += printf('%s%*s%s%s', s.left, w, s.char, s.right, s.pad);
+				}
+			}
+			if (s.left != '') {
+				usedColorThisTime = true;
+				lastColor = s.left;
+			}
 		}
 
-		return result;
+		return {
+			content,
+			usedColorThisTime,
+			lastColor
+		};
+	}
+
+	getCaptionFrills () {
+		const widthInvalidated = pref.format == 'Z,';
+		let content = '';
+		let usedColorThisTime = false;
+		let lastColor = null;
+
+		if (pref.printInode) {
+			content += printf('%s ', this.formatInode());
+		}
+		if (pref.printBlockSize) {
+			content += printf('%s ', this.formatBlockSize());
+		}
+		if (pref.printScontext) {
+			content += printf('%s ', this.scontext);
+		}
+		if (gitUtils?.isValidPath) {
+			const s = this.formatGit();
+			if (s.char != '') {
+				if (pref.printThumbnail) {
+					content += printf('%s%s%s%s', s.left, s.desc, s.right, s.pad);
+				}
+				else {
+					content += printf('%s%s%s%s', s.left, s.char, s.right, s.pad);
+				}
+			}
+			if (s.left != '') {
+				usedColorThisTime = true;
+				lastColor = s.left;
+			}
+		}
+
+		return {
+			content,
+			usedColorThisTime,
+			lastColor
+		};
 	}
 
 	getDecoratedName (isSymlinkTarget, ignoreAbsoluteName) {
@@ -1193,13 +1282,16 @@ class FileInfo {
 			getColorIndicator(this, isSymlinkTarget) : null;
 		const usedColorThisTime = pref.printWithColor
 			&& (!!escapeSequence || isColored('no'));
+		const allowPad = !isSymlinkTarget && !pref.printThumbnail;
+		const absoluteName = ignoreAbsoluteName ? null : this.absoluteName;
+
 		const decorated = getDecoratedName(
 			name,
 			pref.filenameQuotingOptions,
 			this.quoted,
 			escapeSequence,
-			!isSymlinkTarget && !pref.printThumbnail,
-			ignoreAbsoluteName ? null : this.absoluteName);
+			allowPad,
+			absoluteName);
 
 		if (!isSymlinkTarget) {
 			this.quoted = decorated.quoted;
@@ -1218,6 +1310,53 @@ class FileInfo {
 		};
 	}
 
+	getTypeIndicator (statOk = this.statOk, mode = this.stat.mode, type = this.fileType) {
+		let c;
+
+		if (statOk ? statUtils.S_ISREG(mode) : type == 'normal') {
+			if (statOk && pref.indicatorStyle == 'classify'
+			 && (mode & statUtils.bits.S_IXUGO)) {
+				c = '*';
+			}
+			else {
+				c = '';
+			}
+		}
+		else {
+			if (statOk ? statUtils.S_ISDIR(mode)
+			 : (type == 'directory' || type == 'arg_directory')) {
+				c = '/';
+			}
+			else if (pref.indicatorStyle == 'slash') {
+				c = '';
+			}
+			else if (statOk ? statUtils.S_ISLNK(mode)
+			 : type == 'symbolic_link') {
+				c = '@';
+			}
+			else if (statOk ? statUtils.S_ISFIFO(mode)
+			 : type == 'fifo') {
+				c = '|';
+			}
+			else if (statOk ? statUtils.S_ISSOCK(mode)
+			 : type == 'sock') {
+				c = '=';
+			}
+			else if (statOk && statUtils.S_ISDOOR(mode)) {
+				c = '>';
+			}
+			else {
+				c = '';
+			}
+		}
+
+		return c;
+	}
+
+	getLinkTypeIndicator () {
+		return this.getTypeIndicator(true, this.linkMode, 'unknown');
+	}
+
 	toShortFormat () {
 		let result;
 
@@ -1225,8 +1364,11 @@ class FileInfo {
 			result = this.cache['short'];
 		}
 		else {
+			let content = '';
+
 			// frills
-			let content = this.getFrills();
+			const frills = this.getFrills();
+			content += frills.content;
 
 			// name
 			const name = this.getDecoratedName();
@@ -1239,9 +1381,14 @@ class FileInfo {
 
 			// indicator
 			if (pref.indicatorStyle != 'none') {
-				content += getTypeIndicator(
-					this.statOk, this.stat.mode, this.fileType);
+				content += this.getTypeIndicator();
 			}
+
+			/*
+			if (/addon/.test(content)) {
+				log(`frills: "${frills.content}" name: "${name.content}"`);
+			}
+			*/
 
 			this.cache['short'] = result = {
 				content,
@@ -1284,14 +1431,12 @@ class FileInfo {
 					}
 
 					if (pref.indicatorStyle != 'none') {
-						content += getTypeIndicator(
-							true, this.linkMode, 'unknown');
+						content += this.getLinkTypeIndicator();
 					}
 				}
 			}
 			else if (pref.indicatorStyle != 'none') {
-				content += getTypeIndicator(
-					this.statOk, this.stat.mode, this.fileType);
+				content += this.getTypeIndicator();
 			}
 
 			this.cache['long'] = result = {
@@ -1315,35 +1460,50 @@ class FileInfo {
 			/*
 			 * frills
 			 */
-			// TBD: what should be printed?
+			const frills = this.getCaptionFrills();
+			if (frills.content != '') {
+				contents.unshift(frills.content);
+			}
 
 			/*
 			 * name
 			 */
-			// name
 			const name = this.getDecoratedName(false, false);
 			contents.unshift(name.content);
 			if (name.usedColorThisTime) {
 				stdout.buffering(true);
 				prepNonFilenameText();
-				const seq = stdout.buffering(false);
-				contents[0] += seq;
+				contents[0] += stdout.buffering(false);
 			}
 
-			// indicator
+			/*
+			 * indicator
+			 */
 			if (pref.indicatorStyle != 'none') {
-				const indicator = getTypeIndicator(
-					this.statOk, this.stat.mode, this.fileType);
+				const indicator = this.getTypeIndicator();
 				contents[0] += indicator;
 			}
 
 			/*
 			 * store
 			 */
-			contents.reverse();
+			let columns = 0, joined = '';
+			contents.forEach((c, index) => {
+				const currentColumns = getColumnsForA(c);
+				if (currentColumns > columns) {
+					columns = currentColumns;
+				}
+				if (currentColumns && index < contents.length - 1) {
+					joined += c.replace(/\s+$/, '') + '\n';
+				}
+				else {
+					joined += c;
+				}
+			});
+
 			this.cache['thumbcap'] = result = {
-				content: contents.join('\n'),
-				columns: Math.max.apply(Math, contents.map(c => getColumnsForA(c)))
+				content: joined,
+				columns: columns
 			};
 		}
 
@@ -1478,6 +1638,148 @@ class FileInfo {
 		const thatDir = a.cache.isDirectory;
 		return compare(thisDir, thatDir);
 	}
+
+	// formatters
+	formatMode () {
+		let modebuf;
+		if (this.statOk) {
+			modebuf = statUtils
+				.getFileModeString(this.stat)
+				.substring(0, 10);
+		}
+		else {
+			modebuf = FILE_TYPE_MAP[this.fileType].mode + '?'.repeat(9);
+		}
+
+		switch (this.aclType) {
+		case 'lsm_context_only':
+			modebuf += '.';
+			break;
+		case 'yes':
+			modebuf += '+';
+			break;
+		}
+
+		return modebuf;
+	}
+
+	formatInode () {
+		return this.statOk && this.stat.ino != 0 ?
+			this.stat.ino.toString() : '?';
+	}
+
+	formatBlockSize () {
+		return this.statOk ?
+			humanUtils.humanReadable(
+				statUtils.ST_NBLOCKS(this.stat),
+				pref.humanOutputOpts,
+				this.stat.blksize,
+				pref.outputBlockSize) : '?';
+	}
+
+	formatNlink () {
+		return this.statOk ?
+			this.stat.nlink.toString() : '?'
+	}
+
+	formatSize () {
+		if (this.statOk
+		 && (statUtils.S_ISCHR(this.stat.mode) || statUtils.S_ISBLK(this.stat.mode))) {
+			const deviceColumns = runtime.maxColumns.majorDeviceNumber + 2 + runtime.maxColumns.minorDeviceNumber;
+			const blanksColumns = runtime.maxColumns.fileSize - deviceColumns;
+
+			const majorMaxColumns = runtime.maxColumns.majorDeviceNumber + Math.max(0, blanksColumns);
+			const minorMaxColumns = runtime.maxColumns.minorDeviceNumber;
+			return printf('%*s, %*s',
+				majorMaxColumns,
+				((this.stat.rdev >> 8) & 0xff).toString(),
+				minorMaxColumns,
+				(this.stat.rdev & 0xff).toString());
+		}
+		else {
+			const sizeString = this.statOk ? humanUtils.humanReadable(
+				this.stat.size,
+				pref.fileHumanOutputOpts,
+				1,
+				pref.fileOutputBlockSize) : '?';
+			return printf(
+				'%*s',
+				runtime.maxColumns.fileSize,
+				sizeString);
+		}
+	}
+
+	formatDateTime () {
+		let whenTimespec;
+		let btimeOk = true;
+		let convertedDateTime = '';
+
+		switch (pref.timeType) {
+		case 'ctime':
+			whenTimespec = this.stat.ctimeNs;
+			break;
+		case 'mtime':
+			whenTimespec = this.stat.mtimeNs;
+			break;
+		case 'atime':
+			whenTimespec = this.stat.atimeNs;
+			break;
+		case 'birthtime':
+			whenTimespec = this.stat['birthtimeNs'];
+			if (!whenTimespec) {
+				btimeOk = false;
+			}
+			break;
+		default:
+			error(EXIT_CODE.LS_FAILURE, null,
+				`Unknown timeType: %s`,
+				quoteUtils.quote(pref.timeType));
+		}
+
+		if (this.statOk && btimeOk) {
+			if (runtime.currentTime < whenTimespec) {
+				runtime.currentTime = BigInt(Date.now() * 1e6);
+			}
+
+			const sixMonthsAgo = runtime.currentTime - HALF_YEAR_NS;
+			const recent = sixMonthsAgo < whenTimespec
+				&& whenTimespec < runtime.currentTime;
+
+			convertedDateTime = formatDateTimeFromTime(whenTimespec, recent);
+		}
+
+		if (convertedDateTime == '') {
+			if (whenTimespec) {
+				convertedDateTime = (whenTimespec / 1000000n).toFixed();
+			}
+			else {
+				convertedDateTime = '?';
+			}
+
+			const dt = formatDateTimeFromTime(process.hrtime.bigint());
+			const cols = getColumnsFor(dt);
+			convertedDateTime = printf('%*s', cols, value);
+		}
+
+		return convertedDateTime;
+	}
+
+	formatGit () {
+		if (gitUtils && Array.isArray(this.git) && this.git[1] < gitUtils.OTHER_FILES_INDEX) {
+			let [char, index] = this.git;
+			let desc = gitUtils.STATUS_CHAR_MAP[char]?.[0]
+				?? gitUtils.UNMERGED_MAP[char]
+				?? 'unknown';
+			let pad = ' ';
+
+			const colors = toIndicator(pref.printWithColor && (extraPref?.SGR?.git?.name?.[index] || gitUtils.SECTION_LABELS[index].color) || '');
+
+			return {char, desc, index, pad, left: colors[0], right: colors[1]};
+		}
+		else {
+			return {char: '', desc: '', index: null, pad: '', left: '', right: ''};
+		}
+	}
 }
 
 class InodeHash {
@@ -1555,10 +1857,10 @@ class HorizontalPrinter {
 		this.maxLines = THUMBNAIL_LINES;
 	}
 
-	push (file, columns) {
+	push (file, columns, pad) {
 		/*
-                   <-> -- CELL_RIGHT_MARGIN_COLS
-<------columns------->
+                   <-> -- pad
+<-----columns----->
 thumb    text block
 -------- ----------
 ######## [INODE]
@@ -1613,8 +1915,8 @@ thumb    text block
 			file.toThumbnailCaptionFormat().content,
 			{
 				columns: new Array(THUMBNAIL_LINES)
-					.fill(columns - (THUMBNAIL_COLS + CELL_RIGHT_MARGIN_COLS))
-					.concat([columns - CELL_RIGHT_MARGIN_COLS]),
+					.fill(columns - THUMBNAIL_COLS)
+					.concat([columns]),
 				ansi: true
 			}
 		);
@@ -1622,7 +1924,7 @@ thumb    text block
 		/*
 		 * store all data
 		 */
-		this.columns.push(columns - CELL_RIGHT_MARGIN_COLS);
+		this.columns.push(columns);
 		this.thumbnails.push(thumbLines);
 		this.lines.push(textBlockContents);
 		this.maxLines = Math.max(this.maxLines, textBlockContents.length);
@@ -1641,7 +1943,7 @@ thumb    text block
 				const currentThumbnail = lineIndex >= this.thumbnails[itemIndex].length ?
 					'' : this.thumbnails[itemIndex][lineIndex];
 				const currentLine = lineIndex >= this.lines[itemIndex].length ?
-					'' : this.lines[itemIndex][lineIndex];
+					'' : this.lines[itemIndex][lineIndex].replace(/[\s\n]+$/, '');
 				const currentPadding = getSpaces(
 					currentColumns
 					- (lineIndex < THUMBNAIL_LINES ? THUMBNAIL_COLS : 0)
@@ -1662,6 +1964,8 @@ thumb    text block
 			else {
 				lines.push(line, newLine);
 			}
+
+			//log(`line #${lineIndex}: "${line}"`, false, true);
 		}
 
 		await printSequenceChunks(lines.join(''));
@@ -2100,7 +2404,7 @@ function getColorIndicator (file, isSymlinkTarget) {
 	}
 
 	const result = ext ? ext.seq : pref.colorMap.knownType[type];
-	//stdout(`<${type}:${result}>`);
+	//log(`getColorIndicator: <${type}:${result}>`);
 	return result;
 }
 
@@ -2124,11 +2428,17 @@ function fileShouldBeIgnored (name) {
 		throw new Error('fileShouldBeIgnored: invalid type');
 	}
 
-	switch (pref.ignoreMode) {
-	case 'default':
-		if (name.startsWith('.')) return true;
-		if (patternsMatch(pref.hidePatterns, name)) return true;
+	const ignoreMode = gitUtils?.isValidPath ?
+		'dot_and_dotdot_only' :
+		pref.ignoreMode;
+
+	switch (ignoreMode) {
+	case 'minimal':
 		if (patternsMatch(pref.ignorePatterns, name)) return true;
+		break;
+
+	case 'dot_and_dotdot_only':
+		if (name == '.' || name == '..') return true;
 		break;
 
 	case 'dot_and_dotdot':
@@ -2136,7 +2446,9 @@ function fileShouldBeIgnored (name) {
 		if (patternsMatch(pref.ignorePatterns, name)) return true;
 		break;
 
-	case 'minimal':
+	case 'default':
+		if (name.startsWith('.')) return true;
+		if (patternsMatch(pref.hidePatterns, name)) return true;
 		if (patternsMatch(pref.ignorePatterns, name)) return true;
 		break;
 
@@ -2146,6 +2458,10 @@ function fileShouldBeIgnored (name) {
 
 	return false;
 }
+
+/*
+ * git integrate functions
+ */
 
 /*
  * sort functions
@@ -2290,29 +2606,6 @@ function sortFileInfos (currentFiles) {
  * format functions
  */
 
-function formatMode (file) {
-	let modebuf;
-	if (file.statOk) {
-		modebuf = statUtils
-			.getFileModeString(file.stat)
-			.substring(0, 10);
-	}
-	else {
-		modebuf = FILE_TYPE_MAP[file.fileType].mode + '?'.repeat(9);
-	}
-
-	switch (file.aclType) {
-	case 'lsm_context_only':
-		modebuf += '.';
-		break;
-	case 'yes':
-		modebuf += '+';
-		break;
-	}
-
-	return modebuf;
-}
-
 function formatUserOrGroup (name, id, width) {
 	const output = typeof name == 'string' ? name : id.toString();
 	return printf('%-*s ', width, output);
@@ -2336,93 +2629,6 @@ function formatGroup (id, width) {
 	else {
 		return formatUserOrGroup('?', id, width);
 	}
-}
-
-function formatSize (file) {
-	if (file.statOk
-	 && (statUtils.S_ISCHR(file.stat.mode) || statUtils.S_ISBLK(file.stat.mode))) {
-		const deviceColumns = runtime.maxColumns.majorDeviceNumber + 2 + runtime.maxColumns.minorDeviceNumber;
-		const blanksColumns = runtime.maxColumns.fileSize - deviceColumns;
-
-		const majorMaxColumns = runtime.maxColumns.majorDeviceNumber + Math.max(0, blanksColumns);
-		const minorMaxColumns = runtime.maxColumns.minorDeviceNumber;
-		return printf('%*s, %*s',
-			majorMaxColumns,
-			((file.stat.rdev >> 8) & 0xff).toString(),
-			minorMaxColumns,
-			(file.stat.rdev & 0xff).toString());
-	}
-	else {
-		const sizeString = file.statOk ? humanUtils.humanReadable(
-			file.stat.size,
-			pref.fileHumanOutputOpts,
-			1,
-			pref.fileOutputBlockSize) : '?';
-		return printf(
-			'%*s',
-			runtime.maxColumns.fileSize,
-			sizeString);
-	}
-}
-
-function formatInode (file) {
-	return file.statOk && file.stat.ino != 0 ?
-		file.stat.ino.toString() : '?';
-}
-
-function formatDateTimeFromFileInfo (file) {
-	let whenTimespec;
-	let btimeOk = true;
-	let convertedDateTime = '';
-
-	switch (pref.timeType) {
-	case 'ctime':
-		whenTimespec = file.stat.ctimeNs;
-		break;
-	case 'mtime':
-		whenTimespec = file.stat.mtimeNs;
-		break;
-	case 'atime':
-		whenTimespec = file.stat.atimeNs;
-		break;
-	case 'birthtime':
-		whenTimespec = file.stat['birthtimeNs'];
-		if (!whenTimespec) {
-			btimeOk = false;
-		}
-		break;
-	default:
-		error(EXIT_CODE.LS_FAILURE, null,
-			`Unknown timeType: %s`,
-			quoteUtils.quote(pref.timeType));
-	}
-
-	if (file.statOk && btimeOk) {
-		if (runtime.currentTime < whenTimespec) {
-			runtime.currentTime = BigInt(Date.now() * 1e6);
-		}
-
-		const sixMonthsAgo = runtime.currentTime - HALF_YEAR_NS;
-		const recent = sixMonthsAgo < whenTimespec
-			&& whenTimespec < runtime.currentTime;
-
-		convertedDateTime = formatDateTimeFromTime(whenTimespec, recent);
-	}
-
-	if (convertedDateTime == '') {
-		if (whenTimespec) {
-			convertedDateTime = (whenTimespec / 1000000n).toFixed();
-		}
-		else {
-			convertedDateTime = '?';
-		}
-
-		const dt = formatDateTimeFromTime(process.hrtime.bigint());
-		const cols = getColumnsFor(dt);
-		convertedDateTime = printf('%*s', cols, value);
-	}
-
-	return convertedDateTime;
 }
 
 function formatDateTimeFromTime (timeNs, recent) {
@@ -2588,49 +2794,6 @@ function getDecoratedName (
 	};
 }
 
-function getTypeIndicator (statOk, mode, type) {
-	let c;
-
-	if (statOk ? statUtils.S_ISREG(mode) : type == 'normal') {
-		if (statOk && pref.indicatorStyle == 'classify'
-		 && (mode & statUtils.bits.S_IXUGO)) {
-			c = '*';
-		}
-		else {
-			c = '';
-		}
-	}
-	else {
-		if (statOk ? statUtils.S_ISDIR(mode)
-		 : (type == 'directory' || type == 'arg_directory')) {
-			c = '/';
-		}
-		else if (pref.indicatorStyle == 'slash') {
-			c = '';
-		}
-		else if (statOk ? statUtils.S_ISLNK(mode)
-		 : type == 'symbolic_link') {
-			c = '@';
-		}
-		else if (statOk ? statUtils.S_ISFIFO(mode)
-		 : type == 'fifo') {
-			c = '|';
-		}
-		else if (statOk ? statUtils.S_ISSOCK(mode)
-		 : type == 'sock') {
-			c = '=';
-		}
-		else if (statOk && statUtils.S_ISDOOR(mode)) {
-			c = '>';
-		}
-		else {
-			c = '';
-		}
-	}
-
-	return c;
-}
-
 function calculateColumns (files, byColumns) {
 	function getLongestFoldedLine (s, columns) {
 		const result = gflCache.get(s)?.get(columns);
@@ -2658,22 +2821,49 @@ function calculateColumns (files, byColumns) {
 		return content;
 	}
 
-	function calculateThresholdColumns (files) {
+	function calculateAverageLength (files) {
+		const cols = [];
 		const averageLength = files.reduce((result, file, index) => {
 			const col = file.toThumbnailCaptionFormat().columns;
+			cols.push(col);
 			return (index * result + col) / (index + 1);
 		}, 0);
+		return [averageLength, cols];
+	}
+
+	function calculateMedian (cols) {
+		return cols.length % 2 ?
+			cols[Math.trunc(cols.length / 2)] :
+			Math.round((cols[cols.length / 2] + cols[cols.length / 2 - 1]) / 2);
+	}
+
+	function cts_avg (files) {
+		return calculateAverageLength(files)[0];
+	}
+
+	function cts_median (files) {
+		return calculateMedian(calculateAverageLength(files)[1]);
+	}
+
+	function cts_avg_median (files) {
+		const [averageLength, cols] = calculateAverageLength(files);
+		return Math.trunc((averageLength + calculateMedian(cols)) / 2);
+	}
+
+	function cts_max_avg_median (files) {
+		const [averageLength, cols] = calculateAverageLength(files);
+		return Math.max(averageLength, calculateMedian(cols));
+	}
+
+	function cts_standard_deviation (files) {
+		const averageLength = calculateAverageLength(files)[0];
 		const sd = Math.sqrt(
 			files.reduce((result, file) => {
 				const col = file.toThumbnailCaptionFormat().columns;
 				return result + Math.pow(col - averageLength, 2);
 			}, 0) / files.length
 		);
-		const thresholdColumns = Math.round(
-			(FOLD_THRESHOLD_DEVIATION - 50) / 10 * sd + averageLength
-		);
-
-		return thresholdColumns;
+		return Math.round((FOLD_THRESHOLD_DEVIATION - 50) / 10 * sd + averageLength);
 	}
 
 	function getTextColumnLength (files) {
@@ -2709,6 +2899,27 @@ function calculateColumns (files, byColumns) {
 	const data = [];
 	const gflCache = new Map;
 
+	let calculateColumnLength, calculateThresholdColumns;
+	if (pref.printThumbnail) {
+		calculateColumnLength = getThumbnailColumnLength;
+
+		switch (pref.foldMethod) {
+		case 'avg':
+			calculateThresholdColumns = cts_avg; break;
+		case 'median':
+			calculateThresholdColumns = cts_median; break;
+		case 'avg+median':
+			calculateThresholdColumns = cts_avg_median; break;
+		case 'max_avg_median':
+			calculateThresholdColumns = cts_max_avg_median; break;
+		default:
+			calculateThresholdColumns = cts_standard_deviation; break;
+		}
+	}
+	else {
+		calculateColumnLength = getTextColumnLength;
+	}
+
 	// generate matrices for all possible columns
 	for (let cols = 1; cols <= maxCols; cols++) {
 		const matrix = [];
@@ -2737,9 +2948,7 @@ function calculateColumns (files, byColumns) {
 		const matrix = data[i];
 
 		for (let col = 0; col < matrix.length; col++) {
-			matrix[col] = pref.printThumbnail ?
-				getThumbnailColumnLength(matrix[col]) :
-				getTextColumnLength(matrix[col]);
+			matrix[col] = calculateColumnLength(matrix[col]);
 		}
 		matrix[matrix.length - 1] -= CELL_RIGHT_MARGIN_COLS;
 
@@ -2831,26 +3040,20 @@ function printLongFormat (file, prevLeadColumns) {
 	if (pref.printInode) {
 		buf.push(printf('%*s ',
 			runtime.maxColumns.inode,
-			formatInode(file)));
+			file.formatInode()));
 	}
 
 	// block size
 	if (pref.printBlockSize) {
-		const blocks = file.statOk ? humanUtils.humanReadable(
-			statUtils.ST_NBLOCKS(file.stat),
-			pref.humanOutputOpts,
-			file.stat.blksize,
-			pref.outputBlockSize) : '?';
 		buf.push(printf('%*s ',
 			runtime.maxColumns.blockSize,
-			blocks));
+			file.formatBlockSize()));
 	}
 
 	// mode and number of links
 	buf.push(printf('%s %*s ',
-		formatMode(file),
-		runtime.maxColumns.nlink,
-		file.statOk ? file.stat.nlink.toString() : '?'));
+		file.formatMode(),
+		runtime.maxColumns.nlink, file.formatNlink()));
 
 	// owner / group / author / security context
 	if (pref.printOwner) {
@@ -2867,10 +3070,19 @@ function printLongFormat (file, prevLeadColumns) {
 	}
 
 	// device number for char or block device / file size
-	buf.push(formatSize(file), ' ');
+	buf.push(file.formatSize(), ' ');
 
 	// modified time (or other format times)
-	buf.push(formatDateTimeFromFileInfo(file), ' ');
+	buf.push(file.formatDateTime(), ' ');
+
+	// git status
+	if (gitUtils?.isValidPath) {
+		const s = file.formatGit();
+		buf.push(printf('%s%*s%s ',
+			s.left,
+			runtime.maxColumns.git, s.char,
+			s.right));
+	}
 
 	// output once here
 	stdout(buf = buf.join(''));
@@ -2885,7 +3097,7 @@ function printLongFormat (file, prevLeadColumns) {
 			const pad = runtime.alignVariableOuterQuotes
 				&& runtime.cwdSomeQuoted
 				&& !file.quoted ? 1 : 0;
-			leadColumns = getColumnsFor(buf) + pad;
+			leadColumns = getColumnsForA(buf) + pad;
 		}
 
 		const restColumns = runtime.lineLength - leadColumns;
@@ -2904,7 +3116,7 @@ function printLongFormat (file, prevLeadColumns) {
 
 printLongFormat.header = function () {
 	const FORMAT = '%2$-*1$.*1$s';
-	const colors = toIndicator(extraPref?.SGR?.long?.header || '');
+	const colors = toIndicator(pref.printWithColor && extraPref?.SGR?.long?.header || '');
 	let buf = [];
 
 	// inode
@@ -2971,6 +3183,11 @@ printLongFormat.header = function () {
 		getColumnsFor(formatDateTimeFromTime(process.hrtime.bigint())),
 		timename));
 
+	// git
+	if (gitUtils?.isValidPath) {
+		buf.push(printf(FORMAT, runtime.maxColumns.git, 'git'));
+	}
+
 	// name
 	let namebuf;
 	buf = buf.map(a => `${colors[0]}${a}${colors[1]}`).join(' ');
@@ -3023,8 +3240,8 @@ thumb    A block                         B block
 	const ablock = new Array(THUMBNAIL_LINES);
 
 	// line #1: mode and size
-	const mode = formatMode(file);
-	const size = formatSize(file);
+	const mode = file.formatMode();
+	const size = file.formatSize();
 	ablock[0] = `${mode}  ${size}`;
 
 	// line #2: owner, group, author and security context
@@ -3049,12 +3266,12 @@ thumb    A block                         B block
 	ablock[1] = ablock[1].join(' ');
 
 	// line #3: time
-	ablock[2] = formatDateTimeFromFileInfo(file);
+	ablock[2] = file.formatDateTime();
 
 	// line #4: inode, block size, number of links
 	ablock[3] = [];
 	if (pref.printInode) {
-		ablock[3].push(printf('#%*s', runtime.maxColumns.inode, formatInode(file)));
+		ablock[3].push(printf('#%*s', runtime.maxColumns.inode, file.formatInode()));
 	}
 	if (pref.printBlockSize) {
 		const blocks = file.statOk ? humanUtils.humanReadable(
@@ -3066,7 +3283,7 @@ thumb    A block                         B block
 	}
 	ablock[3].push(printf('%*s links',
 		runtime.maxColumns.nlink,
-		file.statOk ? file.stat.nlink.toString() : '?'));
+		file.formatNlink()));
 	ablock[3] = ablock[3].join(', ');
 
 	// compute max columns of A-block
@@ -3166,6 +3383,10 @@ async function printDirectory (name, realName, isCommandlineArg, needPrintDirect
 		}
 
 		stdout(': ');
+	}
+
+	if (pref.git) {
+		gitUtils.path = name;
 	}
 
 	try {
@@ -3336,7 +3557,7 @@ async function printDirectory (name, realName, isCommandlineArg, needPrintDirect
 			pref.humanOutputOpts,
 			files.length ? files[0].stat.blksize : 4096,
 			pref.outputBlockSize);
-		header = `total ${blockString}${runtime.eolbyte}`;
+		header = `total ${blockString}`;
 	}
 
 	if (files.length) {
@@ -3347,13 +3568,39 @@ async function printDirectory (name, realName, isCommandlineArg, needPrintDirect
 	}
 }
 
-function printCurrentFiles (path, files, header) /* returns promise */ {
-	async function printContent (content, lines) {
+async function printCurrentFiles (path, files, header) {
+	function printHeader () {
+		const headers = [];
+
+		if (header) {
+			headers.push(header);
+		}
+		if (files2.branchHeader) {
+			const colors = toIndicator(extraPref?.SGR?.git?.header || '')
+			headers.push(`branch ${colors[0]}${files2.branchHeader}${colors[1]}`);
+		}
+		if (headers.length) {
+			stdout(headers.join(', ') + runtime.eolbyte);
+			printedLines++;
+		}
+	}
+
+	function printSectionHeader (section) {
+		if (!section.label) return;
+
+		const colors = toIndicator(pref.printWithColor && extraPref?.SGR?.git?.section?.[section.index] || '');
+		const label = `${colors[0]}${section.label}${colors[1]}`;
+
+		stdout(`${runtime.eolbyte}${label}:${runtime.eolbyte}`);
+		printedLines += 2;
+	}
+
+	async function printContent (content) {
 		if (process.stdout.isTTY
 		 && stdout.bufferingDepth == 0
 		 && !pref.recursive
 		 && !pref.pager.includes('none')
-		 && lines > runtime.termInfo.lines - getPromptLines()) {
+		 && printedLines > runtime.termInfo.lines - getPromptLines()) {
 			await callPager(content, getPagerPrompt(0, files.length));
 		}
 		else {
@@ -3361,7 +3608,7 @@ function printCurrentFiles (path, files, header) /* returns promise */ {
 		}
 	}
 
-	function printProgress (consumedTime, printedEntries) {
+	function printProgress (consumedTime) {
 		if (process.stdout.isTTY
 		 && !pref.recursive
 		 && consumedTime >= LIMIT_MSECS_TO_PRINT_STRIP_STATUS
@@ -3372,85 +3619,91 @@ function printCurrentFiles (path, files, header) /* returns promise */ {
 		}
 	}
 
+	function printOnePerLineCore (entries) {
+		if (runtime.lineLength) {
+			for (const entry of entries) {
+				const folded = Unistring.getFoldedLines(
+					entry.toShortFormat().content,
+					{columns: runtime.lineLength, ansi: true});
+				printedLines += folded.length;
+				setNormalColor();
+				stdout(folded.join('\n') + runtime.eolbyte);
+			}
+		}
+		else {
+			for (const entry of entries) {
+				printFrillsAndDecoratedName(entry);
+				stdout(runtime.eolbyte);
+			}
+			printedLines += entries.length;
+		}
+	}
+
 	/*
 	 * simple printers
 	 */
 
 	async function printOnePerLine () {
-		let printedLines = 0, content;
+		let content;
 
 		stdout.buffering(true);
 		try {
-			if (header) {
-				stdout(header);
-				printedLines++;
-			}
+			printHeader();
 
-			if (runtime.lineLength) {
-				for (const file of files) {
-					const folded = Unistring.getFoldedLines(
-						file.toShortFormat().content,
-						{columns: runtime.lineLength, ansi: true});
-					printedLines += folded.length;
-					setNormalColor();
-					stdout(folded.join('\n') + runtime.eolbyte);
-				}
-			}
-			else {
-				for (const file of files) {
-					printFrillsAndDecoratedName(file);
-					stdout(runtime.eolbyte);
-				}
-				printedLines += files.length;
+			for (const section of files2.sections) {
+				printSectionHeader(section);
+				printOnePerLineCore(section.entries);
 			}
 		}
 		finally {
 			content = stdout.buffering(false);
 		}
 
-		await printContent(content, printedLines);
+		await printContent(content);
 	}
 
 	async function printWithSeparator (separator) {
-		let printedLines = 0, content;
+		let content;
 
 		stdout.buffering(true);
 		try {
-			if (header) {
-				stdout(header);
-				printedLines++;
-			}
+			printHeader();
 
-			for (let filesno = 0, pos = 0; filesno < files.length; filesno++) {
-				const len = runtime.lineLength ? files[filesno].toShortFormat().columns : 0;
+			for (const section of files2.sections) {
+				printSectionHeader(section);
 
-				if (filesno) {
-					let lineSeparator;
-					if (!runtime.lineLength
-					 || (pos + len + 2 < runtime.lineLength && pos <= 0x10000 - len - 2)) {
-						pos += 2;
-						lineSeparator = ' ';
+				const entries = section.entries;
+				for (let filesno = 0, pos = 0; filesno < entries.length; filesno++) {
+					const len = runtime.lineLength ? entries[filesno].toShortFormat().columns : 0;
+
+					if (filesno) {
+						let lineSeparator;
+						if (!runtime.lineLength
+						 || (pos + len + 2 < runtime.lineLength && pos <= 0x10000 - len - 2)) {
+							pos += 2;
+							lineSeparator = ' ';
+						}
+						else {
+							printedLines += runtime.lineLength ?
+								Math.ceil((pos + len) / runtime.lineLength) : 1;
+							pos = 0;
+							lineSeparator = runtime.eolbyte;
+						}
+						stdout(separator + lineSeparator);
 					}
-					else {
-						printedLines += runtime.lineLength ?
-							Math.ceil((pos + len) / runtime.lineLength) : 1;
-						pos = 0;
-						lineSeparator = runtime.eolbyte;
-					}
-					stdout(separator + lineSeparator);
+
+					printFrillsAndDecoratedName(entries[filesno]);
+					pos += len;
 				}
 
-				printFrillsAndDecoratedName(files[filesno]);
-				pos += len;
+				stdout(runtime.eolbyte);
 			}
-
-			stdout(runtime.eolbyte);
 		}
 		finally {
 			content = stdout.buffering(false);
 		}
 
-		await printContent(content, printedLines);
+		await printContent(content);
 	}
 
 	/*
@@ -3458,33 +3711,36 @@ function printCurrentFiles (path, files, header) /* returns promise */ {
 	 */
 
 	async function printLongConventional () {
-		let printedLines = 0, content;
+		let content;
 
 		stdout.buffering(true);
 		try {
-			if (header) {
-				stdout(header);
-				printedLines++;
-			}
-			if (pref.printHeader) {
-				printLongFormat.header();
-				printedLines++;
-			}
+			printHeader();
 
-			let leadColumns = 0;
-			for (const file of files) {
-				setNormalColor();
-				const result = printLongFormat(file, leadColumns);
-				stdout(runtime.eolbyte);
-				printedLines += result.lines;
-				leadColumns = result.leadColumns;
+			for (const section of files2.sections) {
+				printSectionHeader(section);
+
+				if (pref.printHeader) {
+					printLongFormat.header();
+					printedLines++;
+				}
+
+				const entries = section.entries;
+				let leadColumns = 0;
+				for (const file of entries) {
+					setNormalColor();
+					const result = printLongFormat(file, leadColumns);
+					stdout(runtime.eolbyte);
+					printedLines += result.lines;
+					leadColumns = result.leadColumns;
+				}
 			}
 		}
 		finally {
 			content = stdout.buffering(false);
 		}
 
-		await printContent(content, printedLines);
+		await printContent(content);
 	}
 
 	/*
@@ -3492,48 +3748,51 @@ function printCurrentFiles (path, files, header) /* returns promise */ {
 	 */
 
 	async function printHorizontalConventional () {
-		const {cols, columnArray} = calculateColumns(files);
-		if (cols == 1) {
-			return await printOnePerLine();
-		}
-
-		let printedLines = 0, content;
+		let content;
 
 		stdout.buffering(true);
 		try {
-			if (header) {
-				stdout(header);
-				printedLines++;
-			}
+			printHeader();
 
-			let nameLength = printFrillsAndDecoratedName(files[0]).columns;
-			let maxNameLength = columnArray[0];
-			let pos = 0;
+			for (const section of files2.sections) {
+				printSectionHeader(section);
 
-			for (let i = 1; i < files.length; i++) {
-				const col = i % cols;
-				if (col == 0) {
-					stdout(runtime.eolbyte);
-					pos = 0;
-					printedLines++;
+				const entries = section.entries;
+				const {cols, columnArray} = calculateColumns(entries);
+				if (cols == 1) {
+					printOnePerLineCore(entries);
 				}
 				else {
-					printIndentSpaces(pos + nameLength, pos + maxNameLength);
-					pos += maxNameLength;
+					let nameLength = printFrillsAndDecoratedName(entries[0]).columns;
+					let maxNameLength = columnArray[0];
+					let pos = 0;
+
+					for (let i = 1; i < entries.length; i++) {
+						const col = i % cols;
+						if (col == 0) {
+							stdout(runtime.eolbyte);
+							pos = 0;
+							printedLines++;
+						}
+						else {
+							printIndentSpaces(pos + nameLength, pos + maxNameLength);
+							pos += maxNameLength;
+						}
+
+						nameLength = printFrillsAndDecoratedName(entries[i]).columns;
+						maxNameLength = columnArray[col];
+					}
+
+					stdout(runtime.eolbyte);
+					printedLines++;
 				}
-
-				nameLength = printFrillsAndDecoratedName(files[i]).columns;
-				maxNameLength = columnArray[col];
 			}
-
-			stdout(runtime.eolbyte);
-			printedLines++;
 		}
 		finally {
 			content = stdout.buffering(false);
 		}
 
-		await printContent(content, printedLines);
+		await printContent(content);
 	}
 
 	/*
@@ -3541,238 +3800,297 @@ function printCurrentFiles (path, files, header) /* returns promise */ {
 	 */
 
 	async function printManyPerLineConventional () {
-		const {cols, columnArray} = calculateColumns(files, true);
-		if (cols == 1) {
-			return await printOnePerLine();
-		}
-
-		let printedLines = 0, content;
+		let content;
 
 		stdout.buffering(true);
 		try {
-			if (header) {
-				stdout(header);
-				printedLines++;
-			}
+			printHeader();
 
-			for (let row = 0, rows = Math.ceil(files.length / cols); row < rows; row++) {
-				let col = 0;
-				let filesno = row;
-				let pos = 0;
+			for (const section of files2.sections) {
+				printSectionHeader(section);
 
-				while (true) {
-					const nameLength = printFrillsAndDecoratedName(files[filesno]).columns;
-					const maxNameLength = columnArray[col++];
-
-					filesno += rows;
-					if (filesno >= files.length) break;
-
-					printIndentSpaces(pos + nameLength, pos + maxNameLength);
-					pos += maxNameLength;
+				const entries = section.entries;
+				const {cols, columnArray} = calculateColumns(entries, true);
+				if (cols == 1) {
+					printOnePerLineCore(entries);
 				}
+				else {
+					for (let row = 0, rows = Math.ceil(entries.length / cols); row < rows; row++) {
+						let col = 0;
+						let filesno = row;
+						let pos = 0;
 
-				stdout(runtime.eolbyte);
-				printedLines++;
+						while (true) {
+							const nameLength = printFrillsAndDecoratedName(entries[filesno]).columns;
+							const maxNameLength = columnArray[col++];
+
+							filesno += rows;
+							if (filesno >= entries.length) break;
+
+							printIndentSpaces(pos + nameLength, pos + maxNameLength);
+							pos += maxNameLength;
+						}
+
+						stdout(runtime.eolbyte);
+						printedLines++;
+					}
+				}
 			}
 		}
 		finally {
 			content = stdout.buffering(false);
 		}
 
-		await printContent(content, printedLines);
+		await printContent(content);
 	}
 
 	/*
 	 * with thumbnails
 	 */
 
+	function printColumnGuide (array) {
+		let result = '';
+		for (let i = 0; i < array.length; i++) {
+			const a = array[i];
+
+			result += '\x1b[36m' + '\u2589'.repeat(THUMBNAIL_COLS - 1) + '\x1b[m ';
+
+			if (i == array.length - 1) {
+				const textwidth = a - THUMBNAIL_COLS;
+				result += printf('\x1b[35m%.*d\x1b[m', textwidth, textwidth);
+			}
+			else {
+				const textwidth = a - THUMBNAIL_COLS - CELL_RIGHT_MARGIN_COLS;
+				result += printf('\x1b[35m%.*d\x1b[m', textwidth, textwidth);
+				result += '\x1b[31m' + '\u2589'.repeat(CELL_RIGHT_MARGIN_COLS) + '\x1b[m';
+			}
+		}
+		console.log(result);
+	}
+
 	async function printLongWithThumbnail () {
 		const terminalRows = runtime.termInfo.lines - getPromptLines();
 		const pagerEnabled = pagerNeeded(files.length * THUMBNAIL_LINES);
-		let printedLines = 0;
 
-		if (header) {
-			stdout(header);
-			printedLines++;
-		}
+		printHeader();
 
-		loop: for (let i = 0; i < files.length; i++) {
-			// 'more' job
-			if (pagerEnabled && printedLines + THUMBNAIL_LINES > terminalRows) {
-				switch (await waitKeyWithPrompt(getPagerPrompt(i, files.length))) {
-				case 'quit':
-					break loop;
-				case 'next-page':
-					printedLines = 0;
-					break;
+		for (const section of files2.sections) {
+			printSectionHeader(section);
+
+			const entries = section.entries;
+			loop: for (let i = 0; i < entries.length; i++) {
+				// 'more' job
+				if (pagerEnabled && printedLines + THUMBNAIL_LINES > terminalRows) {
+					switch (await waitKeyWithPrompt(getPagerPrompt(i, entries.length))) {
+					case 'quit':
+						break loop;
+					case 'next-page':
+						printedLines = 0;
+						break;
+					}
 				}
-			}
 
-			// print current entry
-			!pref.recursive && process.stdout.isTTY && stdout.eraseLine();
-			setNormalColor();
-			printedLines += await printLongFormatWithThumbnail(files[i], i);
+				// print current entry
+				!pref.recursive && process.stdout.isTTY && stdout.eraseLine();
+				setNormalColor();
+				printedLines += await printLongFormatWithThumbnail(entries[i], i);
+			}
 		}
 	}
 
-	async function printHorizontalWithThumbnail () /* returns promise */ {
-		const {cols, columnArray} = calculateColumns(files);
+	async function printHorizontalWithThumbnail () {
 		const terminalRows = runtime.termInfo.lines - 2;
-		const rows = Math.ceil(files.length / cols);
-		const pagerEnabled = pagerNeeded(rows * THUMBNAIL_LINES);
-		let printedLines = 0, printedEntries = 0;
 
-		if (header) {
-			stdout(header);
-			printedLines++;
-		}
+		printHeader();
 
-		loop: for (let row = 0; row < rows; row++) {
-			const packer = new HorizontalPrinter;
-			let consumedTime;
+		for (const section of files2.sections) {
+			printSectionHeader(section);
 
-			// prepare current strip
-			{
-				const startTime = Date.now();
-				let col = 0, filesno = row * cols;
-				do {
-					const pad = col + 1 >= cols ? CELL_RIGHT_MARGIN_COLS : 0;
-					packer.push(
-						files[filesno],
-						columnArray[col++] + pad);
-				} while (++filesno < Math.min(files.length, row * cols + cols));
-				consumedTime = Date.now() - startTime;
-			}
+			const entries = section.entries;
+			const {cols, columnArray} = calculateColumns(entries);
+			const rows = Math.ceil(entries.length / cols);
+			const pagerEnabled = pagerNeeded(rows * THUMBNAIL_LINES);
+			//printColumnGuide(columnArray);
 
-			// 'more' job
-			if (pagerEnabled && printedLines + packer.maxLines > terminalRows) {
-				switch (await waitKeyWithPrompt(getPagerPrompt(printedEntries, files.length))) {
-				case 'quit':
-					break loop;
-				case 'next-page':
-					printedLines = 0;
-					break;
+			loop: for (let row = 0; row < rows; row++) {
+				const packer = new HorizontalPrinter;
+				let consumedTime;
+
+				// prepare current strip
+				{
+					const startTime = Date.now();
+					let col = 0, filesno = row * cols;
+					do {
+						const pad = col + 1 >= cols ? 0 : CELL_RIGHT_MARGIN_COLS;
+						packer.push(
+							entries[filesno],
+							columnArray[col++] - pad, pad);
+					} while (++filesno < Math.min(entries.length, row * cols + cols));
+					consumedTime = Date.now() - startTime;
 				}
-			}
 
-			// print current strip
-			!pref.recursive && process.stdout.isTTY && stdout.eraseLine();
-			await packer.print();
-			printedLines += packer.maxLines;
-			printedEntries += packer.columns.length;
-			printProgress(consumedTime, printedEntries);
+				// 'more' job
+				if (pagerEnabled && printedLines + packer.maxLines > terminalRows) {
+					switch (await waitKeyWithPrompt(getPagerPrompt(printedEntries, entries.length))) {
+					case 'quit':
+						break loop;
+					case 'next-page':
+						printedLines = 0;
+						break;
+					}
+				}
+
+				// print current strip
+				!pref.recursive && process.stdout.isTTY && stdout.eraseLine();
+				await packer.print();
+				printedLines += packer.maxLines;
+				printedEntries += packer.columns.length;
+				printProgress(consumedTime);
+			}
 		}
 	}
 
 	async function printManyPerLineWithThumbnail () {
-		const {cols, columnArray} = calculateColumns(files, true);
 		const terminalRows = runtime.termInfo.lines - 2;
-		const rows = Math.ceil(files.length / cols);
-		const pagerEnabled = pagerNeeded(rows * THUMBNAIL_LINES);
-		let printedLines = 0, printedEntries = 0;
 
-		if (header) {
-			stdout(header);
-			printedLines++;
-		}
+		printHeader();
 
-		loop: for (let row = 0; row < rows; row++) {
-			const packer = new HorizontalPrinter;
-			let consumedTime;
+		for (const section of files2.sections) {
+			printSectionHeader(section);
 
-			// prepare current strip
-			{
-				const startTime = Date.now();
-				let col = 0, filesno = row;
-				do {
-					const pad = col + 1 >= cols ? CELL_RIGHT_MARGIN_COLS : 0;
-					packer.push(
-						files[filesno],
-						columnArray[col++] + pad);
-				} while ((filesno += rows) < files.length);
-				consumedTime = Date.now() - startTime;
-			}
+			const entries = section.entries;
+			const {cols, columnArray} = calculateColumns(entries, true);
+			const rows = Math.ceil(entries.length / cols);
+			const pagerEnabled = pagerNeeded(rows * THUMBNAIL_LINES);
+			//printColumnGuide(columnArray);
 
-			// 'more' job
-			if (pagerEnabled && printedLines + packer.maxLines > terminalRows) {
-				switch (await waitKeyWithPrompt(getPagerPrompt(printedEntries, files.length))) {
-				case 'quit':
-					break loop;
-				case 'next-page':
-					printedLines = 0;
-					break;
+			loop: for (let row = 0; row < rows; row++) {
+				const packer = new HorizontalPrinter;
+				let consumedTime;
+
+				// prepare current strip
+				{
+					const startTime = Date.now();
+					let col = 0, filesno = row;
+					do {
+						const pad = col + 1 >= cols ? 0 : CELL_RIGHT_MARGIN_COLS;
+						packer.push(
+							entries[filesno],
+							columnArray[col++] - pad, pad);
+					} while ((filesno += rows) < entries.length);
+					consumedTime = Date.now() - startTime;
 				}
-			}
 
-			// print current strip
-			!pref.recursive && process.stdout.isTTY && stdout.eraseLine();
-			await packer.print();
-			printedLines += packer.maxLines;
-			printedEntries += packer.columns.length;
-			printProgress(consumedTime, printedEntries);
+				// 'more' job
+				if (pagerEnabled && printedLines + packer.maxLines > terminalRows) {
+					switch (await waitKeyWithPrompt(getPagerPrompt(printedEntries, entries.length))) {
+					case 'quit':
+						break loop;
+					case 'next-page':
+						printedLines = 0;
+						break;
+					}
+				}
+
+				// print current strip
+				!pref.recursive && process.stdout.isTTY && stdout.eraseLine();
+				await packer.print();
+				printedLines += packer.maxLines;
+				printedEntries += packer.columns.length;
+				printProgress(consumedTime);
+			}
 		}
 	}
 
-	let result;
+	/*
+	 * entry
+	 */
+
+	let files2, printedLines = 0, printedEntries = 0;
+
+	// group the files (array of FileInfo) by sections
+	if (gitUtils?.isValidPath) {
+		const merged = gitUtils.merge(files);
+		if (merged && !merged.error) {
+			files2 = merged;
+			runtime.maxColumns.git = gitUtils.maxColumns;
+		}
+	}
+	if (!files2) {
+		files2 = {
+			branchHeader: null,
+			sections: [
+				{
+					index: null,
+					label: null,
+					entries: files
+				}
+			]
+		};
+	}
 
 	stdout.showCursor(false);
-
-	switch (pref.format) {
-	case 'И':
-		if (runtime.lineLength) {
-			if (isThumbnailEnabled()) {
-				result = printManyPerLineWithThumbnail();
+	try {
+		switch (pref.format) {
+		case 'И':
+			if (runtime.lineLength) {
+				if (isThumbnailEnabled()) {
+					await printManyPerLineWithThumbnail();
+				}
+				else {
+					await printManyPerLineConventional();
+				}
 			}
 			else {
-				result = printManyPerLineConventional();
+				await printWithSeparator(' ');
 			}
-		}
-		else {
-			result = printWithSeparator(' ');
-		}
-		break;
+			break;
 
-	case 'long':
-		if (isThumbnailEnabled()) {
-			result = printLongWithThumbnail();
-		}
-		else {
-			result = printLongConventional();
-		}
-		break;
-
-	case 'Z':
-		if (runtime.lineLength) {
+		case 'long':
 			if (isThumbnailEnabled()) {
-				result = printHorizontalWithThumbnail();
+				await printLongWithThumbnail();
 			}
 			else {
-				result = printHorizontalConventional();
+				await printLongConventional();
 			}
-		}
-		else {
-			result = printWithSeparator(' ');
-		}
-		break;
+			break;
 
-	case '1':
-		result = printOnePerLine();
-		break;
+		case 'Z':
+			if (runtime.lineLength) {
+				if (isThumbnailEnabled()) {
+					await printHorizontalWithThumbnail();
+				}
+				else {
+					await printHorizontalConventional();
+				}
+			}
+			else {
+				await printWithSeparator(' ');
+			}
+			break;
 
-	case 'Z,':
-		result = printWithSeparator(',');
-		break;
+		case '1':
+			await printOnePerLine();
+			break;
+
+		case 'Z,':
+			await printWithSeparator(',');
+			break;
+		}
 	}
-
-	return result.finally(() => {
+	finally {
 		stdout.showCursor(true);
 		runtime.totalFileNum += files.length;
-	});
+	}
 }
 
 /*
  * ls core functions
  */
+
+function createFiles () {
+	return [{label: null, entries: []}];
+}
 
 function clearFiles () {
 	runtime.cwdSomeQuoted = false;
@@ -4157,8 +4475,7 @@ function extractDirsFromFiles (currentFiles, dirName, isCommandlineArg) {
 			queueDirectory(name, f.linkName, isCommandlineArg);
 
 			if (f.fileType == 'arg_directory') {
-				currentFiles.splice(i, 1);
-				i--;
+				currentFiles.splice(i--, 1);
 			}
 		}
 	}
@@ -4203,7 +4520,7 @@ function initSignals () {
 	}
 }
 
-async function printHelp () /* returns promise */ {
+async function printHelp () {
 	const m = await import('./switchStrings.js');
 	const switchStrings = m.switchStrings;
 	const header = m.header.replace(/<self>/g, self);
@@ -4287,7 +4604,7 @@ function getDynamicImports () {
 			module.parseLsColors();
 		}));
 	}
-	if (pref.ignoreThumbnailCache || pref.printThumbnail) {
+	if (pref.printThumbnail || pref.ignoreThumbnailCache) {
 		dynamicImports.push(import('./thumbnail.js').then(module => {
 			const utils = initThumbnailUtils(module.thumbnailUtils);
 
@@ -4310,6 +4627,13 @@ function getDynamicImports () {
 	if (pref.sortType == 'version') {
 		dynamicImports.push(import('./version.js').then(module => {
 			versionUtils = module.versionUtils;
+		}));
+	}
+	if (pref.git) {
+		dynamicImports.push(import('./git.js').then(module => {
+			gitUtils = module.gitUtils;
+			gitUtils.includeIgnoredFiles = true;
+			//gitUtils.filterFunc = fileShouldBeIgnored;
 		}));
 	}
 
@@ -4420,7 +4744,6 @@ There is NO WARRANTY, to the extent permitted by law.`);
 			pref.dereference = 'command_line_symlink_to_dir';
 		}
 	}
-	Object.freeze(pref);
 
 	runtime.formatNeedsStat = pref.sortType == 'time'
 		|| pref.sortType == 'size'
@@ -4444,6 +4767,8 @@ There is NO WARRANTY, to the extent permitted by law.`);
 
 	await Promise.all(getDynamicImports());
 
+	Object.freeze(pref);
+
 	/*
 	 * load extra pref from ~/.config/lss.json
 	 */
@@ -4466,6 +4791,7 @@ There is NO WARRANTY, to the extent permitted by law.`);
 	}
 
 	if (args.operands.length <= 0) {
+		// 'lss -d'
 		if (pref.immediateDirs) {
 			const result = gobbleFileFromCommandlineArg(
 				'', '.', 'directory', 0);
@@ -4473,11 +4799,14 @@ There is NO WARRANTY, to the extent permitted by law.`);
 				currentFiles.push(result.file);
 			}
 		}
+
+		// 'lss'
 		else {
 			queueDirectory('.', null, true);
 		}
 	}
 	else {
+		// 'lss <some operands>'
 		for (const operand of args.operands) {
 			const result = gobbleFileFromCommandlineArg(
 				'', operand.buffer, 'unknown', 0);
@@ -4487,13 +4816,7 @@ There is NO WARRANTY, to the extent permitted by law.`);
 		}
 	}
 
-	for (let i = 0; i < currentFiles.length; i++) {
-		if (!currentFiles[i]) {
-			currentFiles.splice(i, 1);
-			i--;
-		}
-	}
-
+	// sort, then extract directories
 	if (currentFiles.length) {
 		sortFileInfos(currentFiles);
 		if (!pref.immediateDirs) {

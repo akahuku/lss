@@ -5,7 +5,29 @@ import {
 	getDefaultLocale, getDefaultTimezone
 } from '../src/time.js';
 
+/*
+ * Known differences between strftime(Intl) and coreutils date:
+ *
+ * [en_US locale]
+ *        strftime(Intl)    coreutils date
+ *   %EC       "AD"              "20"
+ *   %Z        "GMT+9"           "JST"
+ */
 const NAME_SPECS = 'a,A,b,B,C,EC,h,p,P,z,Z';
+
+/*
+ * Known differences between strftime(Intl) and coreutils date:
+ *
+ * [en_US locale]
+ *        strftime(Intl)    coreutils date
+ *   %EY      "2024"           "2024 AD"
+ *
+ * [ja_JP locale]
+ *        strftime(Intl)    coreutils date
+ *   %b       "3月"           " 3月"
+ *   %h       "3月"           " 3月"
+ *   %EY      "令和6年"       "令和06年"
+ */
 const NUMERIC_SPECS = 'd,D,F,e,G,g,H,I,j,k,l,m,M,R,s,S,T,u,U,V,w,W,y,Y,Ey,EY';
 function getNativeDate (locale, timezone, format, date) {
 	let result;

@@ -64,7 +64,7 @@ describe('unknown switches', () => {
 		assert.ok(eventEmitted);
 		assert.ok(result.error instanceof pargs.ParseArgError);
 		assert.equal(result.error.parseArgErrorCode, 0);
-		assert.equal(result.error.switchString, 'a');
+		assert.equal(result.error.switchString, '-a');
 	});
 });
 

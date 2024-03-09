@@ -130,3 +130,5 @@ export const versionUtils = (() => {
 
 	return {file_prefixlen, file_prefixlen2, filevercmp};
 })();
+
+// vim:set ts=4 sw=4 fenc=UTF-8 ff=unix ft=javascript fdm=marker fmr=<<<,>>> :

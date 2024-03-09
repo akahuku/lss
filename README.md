@@ -1,5 +1,7 @@
 # lss
 
+[English version README](README.en.md)
+
 lss は [GNU coreutils ls](https://www.gnu.org/software/coreutils/manual/html_node/ls-invocation.html) とほぼ同じ機能に加えて以下の機能を付加した
 [Node.js](http://nodejs.org) のアプリケーションです。
 
@@ -8,10 +10,12 @@ lss は [GNU coreutils ls](https://www.gnu.org/software/coreutils/manual/html_no
   * デスクトップ環境がインストールされていないシステムでもそれなりのアイコンを表示します
   * 画像、動画、PDF、フォントなどのサムネイルもデスクトップ環境にインストールされたサムネイラーを用いて同等のものを生成します
   * 出力結果が端末の高さを超えている場合に less などのページャを起動します
+  * 引数に指定されたディレクトリが git リポジトリであった場合の専用の表示モードがあります
 
 ![showing multiple directories](https://appsweets.net/lss/image/lss-multi-dirs.png "複数のディレクトリの表示")
 ![detailed output and paging](https://appsweets.net/lss/image/lss-detail-paging.png "詳細な出力とページング")
 ![running lss on vscode](https://appsweets.net/lss/image/lss-vscode-ja.png "vscode 上の lss")
+![git integration](https://appsweets.net/lss/image/lss-git-integration.png "git 用表示")
 
 一方、ls にあるが lss にはない機能は以下の通りです。
 
@@ -130,6 +134,7 @@ grep で出力される行の第 3 フィールドに `w` があることを確�
 --drop-types=_types_ | 指定したタイプ（後述）を表示から外します
 --select-types=_types_ | 指定したタイプ（後述）のみを表示します
 -P, --pager=_pager_ | 表示が端末の高さを超える場合に使用するページャの名前を指定します
+--git    | 引数のディレクトリが git のリポジトリである場合に専用の表示を行います
 --header | -l と併用することでヘッダ行を表示します
 -y, --thumbnail | `-C / -g / -l / -n / -o / -x` と併用することでアイコンおよびサムネイルを表示します
 --no-thumbnail | サムネイルを表示しません

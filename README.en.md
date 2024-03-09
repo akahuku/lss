@@ -1,5 +1,7 @@
 # lss
 
+[日本語版の README](README.md)
+
 lss is a [Node.js](http://nodejs.org) application with almost the same functionality as [GNU coreutils ls](https://www.gnu.org/software/coreutils/manual/html_node/ls-invocation.html) plus the following features:
 
   * Displays icons and thumbnails in [sixel](https://en.wikipedia.org/wiki/Sixel) format
@@ -7,10 +9,12 @@ lss is a [Node.js](http://nodejs.org) application with almost the same functiona
   * Displays as many icons as possible, even on systems without a desktop environment installed
   * Thumbnails for images, videos, PDFs, fonts, etc. are also generated equivalently using a thumbnailer installed in the desktop environment
   * Invokes a pager such as less if the output exceeds the height of the terminal
+  * There is a special display mode if the directory that specified in the argument is a git repository
 
 ![showing multiple directories](https://appsweets.net/lss/image/lss-multi-dirs.png "Showing multiple directories")
 ![detailed output and paging](https://appsweets.net/lss/image/lss-detail-paging.png "Detailed output and paging")
 ![running lss on vscode](https://appsweets.net/lss/image/lss-vscode-en.png "Running lss on vscode")
+![git integration](https://appsweets.net/lss/image/lss-git-integration.png "Displaying git integration mode")
 
 On the other hand, features that exist in ls but not in lss are as follows:
 
@@ -50,7 +54,7 @@ $ npm install
 to periodically clear the thumbnail caches.
 
 
-### Building the decicated add-on
+### Building the dedicated add-on
 
 The following lss features are not provided in the standard Node.js modules,
 so lss uses dedicated add-on.
@@ -131,6 +135,7 @@ Switch | Description
 --drop-types=_types_ | Remove the specified type (see below) from the display
 --select-types=_types_ | Displays only the specified type (see below)
 -P, --pager=_pager_ | Specifies the pager name to use when the display exceeds the height of the terminal
+--git    | Turn special display mode on if the directory that specified in the argument is a git repository
 --header | Displays header lines when used with `-l` switch
 -y, --thumbnail | Displays icons and thumbnails when used with `-C / -g / -l / -n / -o / -x` switches
 --no-thumbnail | Do not display icons and thumbnails

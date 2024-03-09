@@ -99,3 +99,5 @@ export const idUtils = (() => {
 
 	return {user, group};
 })();
+
+// vim:set ts=4 sw=4 fenc=UTF-8 ff=unix ft=javascript fdm=marker fmr=<<<,>>> :

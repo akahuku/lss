@@ -343,3 +343,5 @@ export function isAbsolute (path) {
 		throw new Error(`isAbsolute: invalid type`);
 	}
 }
+
+// vim:set ts=4 sw=4 fenc=UTF-8 ff=unix ft=javascript fdm=marker fmr=<<<,>>> :
